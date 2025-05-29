@@ -7,6 +7,11 @@ import optuna
 import matplotlib.pyplot as plt
 from optuna.visualization import plot_optimization_history, plot_param_importances, plot_slice
 from multiprocessing import Pool
+import time
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
 
 # Define the image processing environment
 class ImageProcessingEnv(gym.Env):
@@ -22,45 +27,44 @@ class ImageProcessingEnv(gym.Env):
         return self.current_image, {}
 
     def step(self, action):
+        logging.info(f"Starting step with action: {action}")
+        start_time = time.time()
+
         if action == 0:
-            # Optimize brightness using Optuna
             study = optuna.create_study(direction='maximize')
-            study.optimize(self.brightness_objective, n_trials=10)
+            study.optimize(self.brightness_objective, n_trials=10, timeout=60)  # Set timeout for trials
             best_brightness = study.best_params['brightness']
             best_contrast = study.best_params['contrast']
             self.current_image = self.adjust_image(self.current_image, best_brightness, best_contrast)
             self.visualize_study(study, 'brightness')
         elif action == 1:
-            # Optimize sharpening using Optuna
             study = optuna.create_study(direction='maximize')
-            study.optimize(self.sharpening_objective, n_trials=10)
+            study.optimize(self.sharpening_objective, n_trials=10, timeout=60)
             best_sharpening_strength = study.best_params['sharpening_strength']
             self.current_image = self.apply_sharpening(self.current_image, best_sharpening_strength)
             self.visualize_study(study, 'sharpening')
         elif action == 2:
-            # Optimize denoising using Optuna
             study = optuna.create_study(direction='maximize')
-            study.optimize(self.denoising_objective, n_trials=10)
+            study.optimize(self.denoising_objective, n_trials=10, timeout=60)
             best_h = study.best_params['h']
             self.current_image = self.apply_denoising(self.current_image, best_h)
             self.visualize_study(study, 'denoising')
 
         reward = self.evaluate_image_quality(self.current_image, self.reference_image)
         done = True  # Single-step environment for simplicity
+
+        logging.info(f"Step completed in {time.time() - start_time:.2f} seconds with reward: {reward}")
         return self.current_image, reward, done, {}, {}
 
     def visualize_study(self, study, action_name):
-        # Plot optimization history
         fig = plot_optimization_history(study)
         fig.show()
         fig.write_image(f'{action_name}_optimization_history.png')
 
-        # Plot parameter importances
         fig = plot_param_importances(study)
         fig.show()
         fig.write_image(f'{action_name}_param_importances.png')
 
-        # Plot slice plot
         fig = plot_slice(study)
         fig.show()
         fig.write_image(f'{action_name}_slice_plot.png')
@@ -101,18 +105,15 @@ class ImageProcessingEnv(gym.Env):
         return psnr_value
 
 def process_image(image_path, reference_image):
-    # Load and resize the original image
+    logging.info(f"Processing image: {image_path}")
     original_image = cv2.imread(image_path)
     original_image = cv2.resize(original_image, (640, 480))
 
-    # Create the environment for the current image
     env = ImageProcessingEnv(original_image, reference_image)
 
-    # Train the agent using PPO
     model = PPO('CnnPolicy', env, verbose=1, batch_size=16, n_steps=512)
     model.learn(total_timesteps=100)
 
-    # Test the trained agent for 100 episodes
     rewards = []
     actions = []
     psnr_values = []
@@ -124,27 +125,22 @@ def process_image(image_path, reference_image):
         actions.append(action)
         psnr_values.append(env.evaluate_image_quality(obs, reference_image))
 
-    # Save the processed image
     output_path = f'processed_{image_path.split("/")[-1]}'
     cv2.imwrite(output_path, obs)
-    print(f'Saved processed image to {output_path}')
+    logging.info(f'Saved processed image to {output_path}')
 
     return rewards, actions, psnr_values, output_path
 
 if __name__ == '__main__':
-    # List of image paths to process
     image_paths = ['Images/1004.jpg', 'Images/10.jpg', 'Images/100.jpg']
     reference_image_path = 'Images/1041.jpg'
 
-    # Load reference image
     reference_image = cv2.imread(reference_image_path)
     reference_image = cv2.resize(reference_image, (640, 480))
 
-    # Use multiprocessing to process images in parallel
-    with Pool(processes=3) as pool:  # Adjust the number of processes based on your CPU cores
+    with Pool(processes=3) as pool:
         results = pool.starmap(process_image, [(image_path, reference_image) for image_path in image_paths])
 
-    # Collect results
     all_rewards = []
     all_actions = []
     all_psnr_values = []
@@ -153,7 +149,6 @@ if __name__ == '__main__':
         all_actions.extend(actions)
         all_psnr_values.extend(psnr_values)
 
-    # Plot reward over time
     plt.figure(figsize=(12, 6))
     plt.plot(all_rewards, label='Reward')
     plt.xlabel('Episode')
@@ -162,7 +157,6 @@ if __name__ == '__main__':
     plt.legend()
     plt.show()
 
-    # Plot action distribution
     plt.figure(figsize=(12, 6))
     plt.hist(all_actions, bins=np.arange(4)-0.5, rwidth=0.8)
     plt.xlabel('Action')
@@ -171,7 +165,6 @@ if __name__ == '__main__':
     plt.xticks([0, 1, 2], ['Brightness', 'Sharpening', 'Denoising'])
     plt.show()
 
-    # Plot PSNR improvement
     plt.figure(figsize=(12, 6))
     plt.plot(all_psnr_values, label='PSNR')
     plt.xlabel('Episode')
